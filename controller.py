@@ -1,31 +1,44 @@
 import dash
 from dash import dcc, html, ctx, Input, Output, State, ALL, callback, Patch
 import logging
+import numpy as np
 from model.TreeNode import PlotType
 from model.model_utils import print_tree
-from textwrap import dedent as d
-from dash import dcc, html, ctx, Input, Output, State, ALL, callback, Patch
-import dash_bootstrap_components as dbc
 from dash.exceptions import PreventUpdate
 from model.dashboard import Dashboard
-import numpy as np
+import dash_bootstrap_components as dbc
+from metadata_processor import process_file
+from prompt_generator import generate_prompt
 
 class NcDashboard:
-    app = app = dash.Dash( __name__, external_stylesheets=[dbc.themes.BOOTSTRAP,
-    # "bootstrap-icons.min.css", # Bootstrap Icons
-    "https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.5.0/font/bootstrap-icons.min.css", # Bootstrap Icons
-                                                 ], suppress_callback_exceptions=True)
- 
-    def __init__(self, file_paths, regex, host = '127.0.0.1', port = 8050):
-
+    def __init__(self, file_paths, regex, host='127.0.0.1', port=8050):
         self.host = host
         self.port = port
+        self.path = file_paths
+        self.regex = regex
+        self.ncdash = Dashboard(file_paths, regex)
+        
+        self.app = dash.Dash(__name__, external_stylesheets=[
+            dbc.themes.BOOTSTRAP,
+            "https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.5.0/font/bootstrap-icons.min.css"
+        ], suppress_callback_exceptions=True)
+        self.app.title = "NcDashboard"
+        
+        self.setup_layout()
+        self.setup_callbacks()
 
         logging.info('Starting NcDashboard...')
-        self.ncdash = Dashboard(file_paths, regex)
 
+    def start(self):
+        self.app.run_server(debug=False, port=self.port, host=self.host)
+
+    def setup_layout(self):
         self.app.layout = dbc.Container(
             [
+                dcc.Input(id='file-path', type='text', placeholder='Enter NetCDF file path'),
+                dbc.Button("Process File", id="process-file-button", color="primary"),
+                dcc.Loading(id="loading-1", children=[html.Div(id="loading-output-1")], type="circle"),
+                html.Div(id='metadata-output'),
                 dcc.Store(id='window-size'),
                 html.Div(id='output-div'),
                 dbc.Row(
@@ -33,7 +46,6 @@ class NcDashboard:
                         dbc.Col(
                             [
                                 html.H1("NcDashboard", style={"textAlign": "center"}),
-
                             ],
                             width={"size": 6, "offset": 3},
                         )
@@ -43,7 +55,6 @@ class NcDashboard:
                     self.initial_menu(),
                     id="start_menu"
                 ),
-
                 dbc.Row(
                     [
                         dbc.Col(
@@ -63,26 +74,34 @@ class NcDashboard:
             fluid=True,
             id="container",
         )
-        self.register_callbacks()
 
-    def start(self):
-        self.app.run_server(debug=False, port=self.port, host=self.host)
+    def setup_callbacks(self):
+        @self.app.callback(
+            Output('metadata-output', 'children'),
+            Output('loading-output-1', 'children'),
+            Input('process-file-button', 'n_clicks'),
+            State('file-path', 'value')
+        )
+        def process_and_generate_prompt(n_clicks, file_path):
+            if not n_clicks:
+                raise PreventUpdate
 
-    def initial_menu(self):
-        return [
-                    dbc.Col( # Creates multiple checklist, one for each type of variable supported (1D, 2D, 3D, 4D)
-                        [
-                            html.H2(f"{var_type} Vars"),
-                            dbc.Checklist(
-                                id=f"{var_type}_vars",
-                                options=[{"label": f'{name} {dims}', "value": field} for name, field, dims in self.ncdash.get_field_names(var_type)],
-                                inline=False,
-                            ),
-                        ]
-                    ) for var_type in ["4D", "3D", "2D", "1D"]
-                ]
+            if not file_path:
+                return html.Div("Please provide a NetCDF file path."), ""
 
-    def register_callbacks(self):
+            # Process NetCDF file
+            metadata = process_file(file_path)
+
+            # Check if processing was successful
+            if 'error' in metadata:
+                return html.Div(f"Error processing file: {metadata['error']}"), ""
+
+            # Generate prompt
+            prompt = generate_prompt(metadata)
+
+            # Return generated prompt
+            return html.Pre(prompt), ""
+
         @self.app.callback(
             Output("start_menu", "children"),
             Input("but_plot_all", "n_clicks"),
@@ -100,7 +119,6 @@ class NcDashboard:
             State("4D_vars", "value"),
             Input("but_plot_all", "n_clicks"),
             State({"type": "click_data_identifier", "index": ALL}, 'children'),
-            # Input("but_plot_together", "n_clicks"),
             Input({"type": "animation", "index": ALL}, "n_clicks"),
             Input({"type": "resolution", "index": ALL}, "value"),
             Input({"type": "close_figure", "index": ALL}, "n_clicks"),
@@ -119,7 +137,6 @@ class NcDashboard:
                                 click_data_list, selected_data_list,
                                     n_clicks_first_frame, n_clicks_prev_frame, n_clicks_next_frame, n_clicks_last_frame,
                                     window_size):
-
             # TODO we need to be able to separate this function, at least to call methods somewhere else 
             window_ratio = 0.8
             if window_size is None:
@@ -135,41 +152,38 @@ class NcDashboard:
             print(f'Type: {type(triggered_id)}, Value: {triggered_id}')
 
             print(f'1D: {selected_1d}, 2D: {selected_2d}, 3D: {selected_3d}, 4D: {selected_4d}')
-            # Check the one trigered was but_plot_all
+            # Check the one triggered was but_plot_all
 
             patch = Patch()
             plot_types = [PlotType.OneD, PlotType.TwoD, PlotType.ThreeD, PlotType.FourD]
                     
             # Initial case, do nothing
-            if triggered_id == None:
+            if triggered_id is None:
                 return [], []
 
             # First level plots, directly from the menu
             elif triggered_id == 'but_plot_all':
                 for i, selected in enumerate([selected_1d, selected_2d, selected_3d, selected_4d]):
-                    if selected!= None and len(selected) > 0:
-
+                    if selected is not None and len(selected) > 0:
                         for c_field in selected:
                             new_figure = self.ncdash.create_default_figure(c_field, plot_types[i])
                             patch.append(new_figure)
 
             # Closing a plot
-            elif type(triggered_id) == dash._utils.AttributeDict and triggered_id['type'] == 'close_figure': # type: ignore
-                # print("------------------------- Closing figure! ----------------")
+            elif isinstance(triggered_id, dash._utils.AttributeDict) and triggered_id['type'] == 'close_figure': # type: ignore
                 node_id = triggered_id['index']
                 patch = self.ncdash.close_figure(node_id, prev_children, patch)
 
-            elif type(triggered_id) == dash._utils.AttributeDict and triggered_id['type'] == 'download_data': # type: ignore
-                # print("------------------------- Downloading data! ----------------")
+            elif isinstance(triggered_id, dash._utils.AttributeDict) and triggered_id['type'] == 'download_data': # type: ignore
                 node_id = triggered_id['index']
                 # patch = self.ncdash.close_figure(node_id, prev_children, patch)
                 if ctx.triggered[0]['prop_id'].find('relayoutData') != -1:
                     print(f'Selected data: {selected_data_list}')
 
             # Next frame
-            elif type(triggered_id) == dash._utils.AttributeDict and (triggered_id['type'] == 'next_frame' or triggered_id['type'] == 'prev_frame' or  # type: ignore
-            triggered_id['type'] == 'first_frame' or triggered_id['type'] == 'last_frame'): # type: ignore
-            
+            elif isinstance(triggered_id, dash._utils.AttributeDict) and (
+                triggered_id['type'] in ['next_frame', 'prev_frame', 'first_frame', 'last_frame']
+            ): # type: ignore
                 index = triggered_id['index'].split(":")
                 coord = index[0]
                 node_id = index[1]
@@ -177,11 +191,8 @@ class NcDashboard:
 
                 coords = node.get_animation_coords()
 
-                # --------------- This part should be the same for all ------------
-                # Get the index of the coordinate
                 coord_index = coords.index(coord)
 
-                # First index should always be time (it doesn't matter if the name is other)
                 if triggered_id['type'] == 'next_frame':
                     if coord_index == 0: # For 4D first index 
                         node.next_time()
@@ -195,66 +206,84 @@ class NcDashboard:
                 elif triggered_id['type'] == 'first_frame':
                     if coord_index == 0:
                         node.set_time_idx(0)
-                    if coord_index == 1 and node.get_plot_type() == PlotType.FourD: # For 4D first index
+                    if coord_index == 1:
                         node.set_depth_idx(0)
                 elif triggered_id['type'] == 'last_frame':
                     if coord_index == 0:
-                        node.set_time_idx(-1)
-                    if coord_index == 1 and node.get_plot_type() == PlotType.FourD:
-                        node.set_depth_idx(-1)
-                
-                # Update the figure
-                for idx, c_child in enumerate(prev_children):
-                    # If we found the corresponding figure, remove it from the list of children
-                    if c_child['props']['id'].split(':')[1] == node_id:
-                        # print(f"Removing child {c_child['props']['id']}")
+                        node.set_time_idx(node.get_max_time_index())
+                    if coord_index == 1:
+                        node.set_depth_idx(node.get_max_depth_index())
 
-                        updated_figure = self.ncdash.create_default_figure(node.get_field_name(), node.get_plot_type(), node)
-                        patch[idx] = updated_figure
-                        break
+                patch.append(node.get_animation_figure())
 
-            # Create animations
-            elif type(triggered_id) == dash._utils.AttributeDict and triggered_id['type'] == 'animation': # type: ignore
-                button_index = triggered_id['index'].split(":")
-                node_id = button_index[0]
-                anim_coord = button_index[1]
-                resolution = [x.split(':')[1] for x in resolution_list if x.split(':')[0] == node_id][0] 
-                patch = self.ncdash.create_animation_figure(node_id, anim_coord, resolution, patch)
+            return patch.get_elements(), "Processing..."
+    
+    def initial_menu(self):
+        return [
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [html.H4("1D Variables")],
+                        width={"size": 6},
+                    ),
+                    dbc.Col(
+                        [html.H4("2D Variables")],
+                        width={"size": 6},
+                    ),
+                ],
+                justify="between",
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dcc.Dropdown(
+                            id="1D_vars",
+                            options=[{"label": "Variable 1D", "value": "1D_var"}],
+                            multi=True,
+                            placeholder="Select 1D Variables"
+                        ),
+                        width={"size": 6},
+                    ),
+                    dbc.Col(
+                        dcc.Dropdown(
+                            id="2D_vars",
+                            options=[{"label": "Variable 2D", "value": "2D_var"}],
+                            multi=True,
+                            placeholder="Select 2D Variables"
+                        ),
+                        width={"size": 6},
+                    ),
+                ],
+                justify="between",
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dcc.Dropdown(
+                            id="3D_vars",
+                            options=[{"label": "Variable 3D", "value": "3D_var"}],
+                            multi=True,
+                            placeholder="Select 3D Variables"
+                        ),
+                        width={"size": 6},
+                    ),
+                    dbc.Col(
+                        dcc.Dropdown(
+                            id="4D_vars",
+                            options=[{"label": "Variable 4D", "value": "4D_var"}],
+                            multi=True,
+                            placeholder="Select 4D Variables"
+                        ),
+                        width={"size": 6},
+                    ),
+                ],
+                justify="between",
+            ),
+        ]
 
-            # Second level plots (someone clicked on map)
-            elif type(triggered_id) == dash._utils.AttributeDict and triggered_id['type'] == 'figure': # type: ignore
-                # Check if it was a relayout event
-                if ctx.triggered[0]['prop_id'].find('relayoutData') != -1:
-                    print(f'Selected data: {selected_data_list}')
-                else:
-                    #  (should generate profile)
-                    print(click_data_list)
-                    node_id = triggered_id['index'].split(":")[0]
-                    data_identifiers = np.array([x.split(':')[0] for x in click_data_identifiers])
-                    click_index = np.where(data_identifiers == node_id)[0][0]
-
-                    # TODO here we should also modify the original plot and add a dot where the user clicked
-                    click_data= click_data_list[click_index]
-                    
-                    patch = self.ncdash.create_profiles(node_id, click_data, patch)
-
-            elif len(prev_children) == 0:
-                return html.Div('', style={"backgroundColor": "blue", "color": "white"}), []
-            else: 
-                return prev_children, []
-
-            print_tree(self.ncdash.tree_root)
-            return patch, []
-
-        self.app.clientside_callback(
-            """
-            function(n_clicks) {
-                return {
-                    width: window.innerWidth,
-                    height: window.innerHeight
-                };
-            }
-            """,
-            Output('window-size', 'data'),
-            Input("but_plot_all", "n_clicks"),
-        )
+if __name__ == '__main__':
+    # Example usage
+    file_paths = ['/path/to/file.nc']
+    regex = 'some_regex'
+    dashboard = NcDashboard(file_paths, regex)
+    dashboard.start()
