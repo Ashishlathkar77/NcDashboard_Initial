@@ -1,18 +1,14 @@
-def generate_prompt(metadata):
-    if 'error' in metadata:
-        return f"Error processing file: {metadata['error']}"
-    
-    variables = ', '.join(metadata['variables'])
-    dimensions = ', '.join(metadata['dimensions'])
-    attributes = json.dumps(metadata['attributes'], indent=2)
-    
+def generate_prompt(user_query, metadata):
     prompt = (
-        "## Metadata Information\n"
-        "### Variables:\n"
-        f"{variables}\n\n"
-        "### Dimensions:\n"
-        f"{dimensions}\n\n"
-        "### Attributes:\n"
-        f"{attributes}\n"
+        "You are an expert Python software engineer. "
+        "You have an xarray dataset with the following variables and metadata:\n\n"
     )
+
+    for var, details in metadata.items():
+        prompt += (
+            f"Variable: {var}, Dimensions: {details['dims']}, "
+            f"Shape: {details['shape']}, Units: {details['units']}\n"
+        )
+
+    prompt += f"\nPlease {user_query} using only xarray and numpy libraries."
     return prompt
